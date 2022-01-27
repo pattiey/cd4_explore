@@ -1,0 +1,199 @@
+---
+title: "cd4_explore"
+author: "pattiey"
+date: "25/01/2022"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load libraries
+library(tidyverse)
+library(Seurat)
+library(ComplexHeatmap)
+```
+
+We are interesting in the subtypes within CD4+ T cell populations. There are known expression markers for each subtype
+
+| Subtype | Expression Marker |
+| -- | -- |
+| Th1 | TBX21 |
+| Th2 | GATA3, STAT5 |
+| Th17 | ROR$\gamma$t (RORC) |
+| Th22 | BNC2, FOXO4, AHR |
+| Tfh | BCL6 | 
+| Treg | FOXP3 |
+
+Create a list with expressiong markers 
+
+```{r}
+markers <- c("CD4", "CD8A", "IFNG", "TBX21", "GATA3", "STAT5A", "STAT5B", "RORC", "BNC2", "FOXO4", "AHR", "BCL6", "FOXP3")
+```
+
+# [GSE72056](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE72056)
+
+## Single cell RNA-seq analysis of melanoma
+
+Found through this paper: [Metabolic landscape of the tumour microenvironment at single cell resolution](https://www.nature.com/articles/s41467-019-11738-0).
+
+```{r}
+raw <- read.table("GSE72056_melanoma_single_cell_revised_v2.txt", sep = "\t", header = T)
+columns <- raw[,1]
+melanoma <- as.data.frame(t(raw[,-1]))
+colnames(melanoma) <- columns
+# There are duplicate columns for MARCH1 and MARCH2
+# I'm not using them in this exploration so just remove them
+melanoma <- melanoma %>% select(-MARCH1, -MARCH2)
+
+# Filter for T cells cells
+melanoma_Tcells <- melanoma %>% filter(`non-malignant cell type (1=T,2=B,3=Macro.4=Endo.,5=CAF;6=NK)` == 1)
+melanoma_Tcells %>% select(markers) %>% summary()
+# Correlation Heatmap of expression markers
+melanoma_Tcells %>% select(markers) %>% cor() %>% Heatmap(cluster_rows = FALSE, cluster_columns = FALSE)
+melanoma_Tcells %>% ggplot() + geom_point(aes(CD4, CD8A), alpha = 0.2)
+combined_density <- melanoma_Tcells %>% ggplot() + geom_density(aes(CD4), fill = "green", alpha = 0.2) + geom_density(aes(CD8A), fill = "blue", alpha = 0.2)
+cd4_density <- melanoma_Tcells %>% filter(CD8A == 0) %>% ggplot() + geom_density(aes(CD4), fill = "green", alpha = 0.2)
+cd8_density <- melanoma_Tcells %>% filter(CD4 == 0) %>% ggplot() + geom_density(aes(CD8A), fill = "blue", alpha = 0.2)
+cd4_density + cd8_density + combined_density
+```
+
+```{r}
+# Convert to a Seurat object
+melanoma.Seurat <- CreateSeuratObject(counts = t(melanoma[,-c(1:3)]), project = "melanoma_T", min.cells = 3, min.features = 50)
+melanoma.Seurat[["Sample"]] <- rownames(melanoma)
+colnames(melanoma_Tcells)[1:3]
+melanoma.Seurat[["Dataset"]] <- "melanoma"
+melanoma.Seurat[["Tumour.Status"]] <- melanoma %>% select(tumor)
+melanoma.Seurat[["Malignant"]] <- melanoma %>% select(`malignant(1=no,2=yes,0=unresolved)`)
+melanoma.Seurat[["Cell.Type"]] <- melanoma %>% select(`non-malignant cell type (1=T,2=B,3=Macro.4=Endo.,5=CAF;6=NK)`)
+
+melanoma.Seurat <- FindVariableFeatures(melanoma.Seurat)
+melanoma.Seurat <- ScaleData(melanoma.Seurat)
+melanoma.Seurat <- RunPCA(melanoma.Seurat)
+pca_plot <- DimPlot(melanoma.Seurat, group.by = c("Malignant", "Cell.Type"), reduction = "pca") 
+pca_plot[[1]]$layers[[1]]$aes_params$alpha <- 0.2
+pca_plot[[2]]$layers[[1]]$aes_params$alpha <- 0.2
+pca_plot 
+```
+
+### T cells
+
+```{r}
+Idents(melanoma.Seurat) <- "Cell.Type"
+melanoma.Tcells <- subset(melanoma.Seurat, idents = 1)
+melanoma.Tcells <- FindVariableFeatures(melanoma.Tcells)
+melanoma.Tcells <- ScaleData(melanoma.Tcells)
+melanoma.Tcells <- RunPCA(melanoma.Tcells)
+
+FeaturePlot(melanoma.Tcells, features = markers, reduction = 'pca')
+FeaturePlot(melanoma.Tcells, features = c("CD4", "CD8A"), reduction = 'pca')
+```
+
+### CD4+ T cells
+
+```{r}
+melanoma.cd4 <- subset(melanoma.Tcells, subset = CD4 > 0)
+melanoma.cd4 <- FindVariableFeatures(melanoma.cd4)
+melanoma.cd4 <- ScaleData(melanoma.cd4)
+melanoma.cd4 <- RunPCA(melanoma.cd4)
+
+FeaturePlot(melanoma.cd4, features = markers, reduction = 'pca')
+```
+
+# [GSE103322](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE103322)
+
+```{r}
+raw <- read.table("GSE103322_HNSCC_all_data.txt", sep = "\t", header = T)
+columns <- raw[,1]
+HNSCC <- as.data.frame(t(raw[-(1:5),-1]))
+colnames(HNSCC) <- columns[-(1:5)]
+HNSCC <- HNSCC %>% mutate_all(function(x) as.numeric(as.character(x)))
+metadata <- as.data.frame(t(raw[1:5, -1]))
+colnames(metadata) <- columns[1:5]
+HNSCC <- cbind(metadata, HNSCC)
+
+# Filter for T cells cells
+HNSCC_Tcells <- HNSCC %>% filter(`non-cancer cell type` == "T cell")
+HNSCC_Tcells %>% select(markers) %>% summary()
+# Correlation Heatmap of expression markers
+HNSCC_Tcells %>% select(markers) %>% cor() %>% Heatmap(cluster_rows = FALSE, cluster_columns = FALSE)
+HNSCC_Tcells %>% ggplot() + geom_point(aes(CD4, CD8A), alpha = 0.2)
+combined_density <- HNSCC_Tcells %>% ggplot() + geom_density(aes(CD4), fill = "green", alpha = 0.2) + geom_density(aes(CD8A), fill = "blue", alpha = 0.2)
+cd4_density <- HNSCC_Tcells %>% filter(CD8A == 0) %>% ggplot() + geom_density(aes(CD4), fill = "green", alpha = 0.2)
+cd8_density <- HNSCC_Tcells %>% filter(CD4 == 0) %>% ggplot() + geom_density(aes(CD8A), fill = "blue", alpha = 0.2)
+cd4_density + cd8_density + combined_density
+```
+```{r}
+# Convert to a Seurat object
+HNSCC.Seurat <- CreateSeuratObject(counts = t(HNSCC[,-c(1:5)]), project = "HNSCC", min.cells = 3, min.features = 50)
+HNSCC.Seurat[["Sample"]] <- rownames(HNSCC)
+HNSCC.Seurat[["Dataset"]] <- "HNSCC"
+HNSCC.Seurat[["Tumour.Status"]] <- HNSCC %>% select(`classified  as cancer cell`)
+HNSCC.Seurat[["Cell.Type"]] <- HNSCC %>% select(`non-cancer cell type`)
+
+HNSCC.Seurat <- FindVariableFeatures(HNSCC.Seurat)
+HNSCC.Seurat <- ScaleData(HNSCC.Seurat)
+HNSCC.Seurat <- RunPCA(HNSCC.Seurat)
+pca_plot <- DimPlot(HNSCC.Seurat, group.by = c("Tumour.Status", "Cell.Type"), reduction = "pca") 
+pca_plot[[1]]$layers[[1]]$aes_params$alpha <- 0.2
+pca_plot[[2]]$layers[[1]]$aes_params$alpha <- 0.2
+pca_plot 
+```
+
+### T cells
+
+```{r}
+Idents(HNSCC.Seurat) <- "Cell.Type"
+HNSCC.Tcells <- subset(HNSCC.Seurat, idents = "T cell")
+HNSCC.Tcells <- FindVariableFeatures(HNSCC.Tcells)
+HNSCC.Tcells <- ScaleData(HNSCC.Tcells)
+HNSCC.Tcells <- RunPCA(HNSCC.Tcells)
+
+FeaturePlot(HNSCC.Tcells, features = markers, reduction = 'pca')
+FeaturePlot(HNSCC.Tcells, features = c("CD4", "CD8A"), reduction = 'pca')
+```
+
+### CD4+ T cells
+
+```{r}
+HNSCC.cd4 <- subset(HNSCC.Tcells, subset = CD4 > 0)
+HNSCC.cd4 <- FindVariableFeatures(HNSCC.cd4)
+HNSCC.cd4 <- ScaleData(HNSCC.cd4)
+HNSCC.cd4 <- RunPCA(HNSCC.cd4)
+
+FeaturePlot(HNSCC.cd4, features = markers, reduction = 'pca')
+FeaturePlot(HNSCC.cd4, dims = c(1,3), features = markers, reduction = 'pca')
+FeaturePlot(HNSCC.cd4, dims = c(3,4), features = markers, reduction = 'pca')
+```
+
+# Look at the two datasets together
+
+```{r}
+combined.Seurat <- merge(melanoma.cd4, HNSCC.cd4)
+
+combined.Seurat <- FindVariableFeatures(combined.Seurat)
+combined.Seurat <- ScaleData(combined.Seurat)
+combined.Seurat <- RunPCA(combined.Seurat)
+pca_plot <- DimPlot(combined.Seurat, group.by = "Dataset", reduction = "pca") 
+pca_plot[[1]]$layers[[1]]$aes_params$alpha <- 0.2
+pca_plot 
+DimPlot(combined.Seurat, dims = c(1,5), group.by = "Dataset", reduction = "pca")
+FeaturePlot(combined.Seurat, features = markers, reduction = 'pca', dims = c(1,5))
+```
+
+# [GSE147928](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE147928) (not working)
+
+## Characterisation of CD4+ T-cell subtypes using single cell RNA sequencing and the impact of cell number and sequencing depth 
+
+Found in this paper [Characterisation of CD4+ T-cell subtypes using single cell RNA sequencing and the impact of cell number and sequencing depth](https://www.nature.com/articles/s41598-020-76972-9?elqTrackId=1b0686d8aecb43c997511015fc34c3b7)
+
+PBMCs extracted from a healthy human volunteer. CD4+ T-cells were isolated then either stimulated with anti-CD3/CD28 or left unstimulated. 
+
+```{r}
+# This doesn't work for whatever reason.
+# stimulated <- readRDS("healthy_pbmcs/GSM4450386_stimulated_full_seurat.rds.gz")
+# unstimulated <- readRDS("healthy_pbmcs/GSM4450387_unstimulated_full_seurat.rds.gz")
+```
